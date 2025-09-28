@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Compra de SQCT</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <style>
+      body {
+        background: url('https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1')
+          no-repeat center center fixed;
+        background-size: cover;
+        color: white;
+        height: 100vh;
+      }
+      .container {
+        background-color: rgba(0, 0, 0, 0.75);
+        padding: 2rem;
+        margin-top: 5%;
+        border-radius: 16px;
+      }
+      .form-control,
+      .btn {
+        border-radius: 10px;
+      }
+      #qrcode-container,
+      #receipt {
+        margin-top: 2rem;
+      }
+      .info-label {
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container col-md-6">
+      <h2 class="text-center mb-4">Comprar SQCT</h2>
+      <form id="buyForm">
+        <div class="mb-3">
+          <label for="wallet" class="form-label">Carteira (Wallet)</label>
+          <input
+            type="text"
+            class="form-control"
+            id="wallet"
+            placeholder="Digite sua carteira"
+            required
+          />
+        </div>
+        <div class="mb-3">
+          <label for="sqctAmount" class="form-label">Quantidade de SQCT</label>
+          <input
+            type="number"
+            class="form-control"
+            id="sqctAmount"
+            min="1"
+            placeholder="Ex: 10"
+            required
+          />
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Você pagará:</label>
+          <p id="usdtValue">0.00 USDT</p>
+        </div>
+        <button type="submit" class="btn btn-primary w-100">
+          Gerar Invoice
+        </button>
+      </form>
+
+      <!-- QR Code + Loading -->
+      <div id="qrcode-container" class="text-center d-none">
+        <h4 class="mt-4">Escaneie o QR Code abaixo para pagar</h4>
+        <canvas id="qrcode"></canvas>
+        <p id="walletText" class="mt-2"></p>
+        <div id="loading-spinner" class="mt-3 text-center">
+          <div class="spinner-border text-light" role="status">
+            <span class="visually-hidden">Carregando...</span>
+          </div>
+          <p class="mt-2">Processando pagamento, aguarde...</p>
+        </div>
+      </div>
+
+      <!-- Comprovante -->
+      <div id="receipt" class="d-none text-white">
+        <h4 class="mt-4 text-success">✅ Pagamento Confirmado</h4>
+        <p>
+          <span class="info-label">Carteira destino:</span>
+          <span id="receipt-address"></span>
+        </p>
+        <p>
+          <span class="info-label">TXID:</span> <span id="receipt-txid"></span>
+        </p>
+        <p>
+          <span class="info-label">Bloco:</span>
+          <span id="receipt-block"></span>
+        </p>
+      </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+    <script>
+      let price = 0;
+      let currentInvoiceUuid = '';
+
+      // Pega o preço do SQCT
+      async function getPrice() {
+        try {
+          const res = await axios.get(
+            'https://test.squarecity.app/webservice/store/get-price',
+          );
+          price = res.data.price;
+        } catch (error) {
+          alert('Erro ao buscar o preço do SQCT.');
+        }
+      }
+
+      // Atualiza valor em USDT ao digitar quantidade
+      $('#sqctAmount').on('input', function () {
+        const qty = parseFloat($(this).val());
+        if (!isNaN(qty) && price > 0) {
+          const usdt = qty * price;
+          $('#usdtValue').text(`${usdt.toFixed(2)} USDT`);
+        } else {
+          $('#usdtValue').text(`0.00 USDT`);
+        }
+      });
+
+      // Envio do formulário
+      $('#buyForm').on('submit', async function (e) {
+        e.preventDefault();
+        const wallet = $('#wallet').val();
+        const sqctQty = parseFloat($('#sqctAmount').val());
+        const amountUSDT = sqctQty * price;
+
+        try {
+          const response = await axios.post(
+            'https://test.squarecity.app/webservice/store/create-invoice',
+            {
+              wallet: wallet,
+              amount: amountUSDT,
+            },
+          );
+
+          if (response.data?.res?.waletInvoice && response.data?.res?.uuid) {
+            const waletInvoice = response.data.res.waletInvoice;
+            currentInvoiceUuid = response.data.res.uuid;
+
+            $('#qrcode-container').removeClass('d-none');
+            $('#walletText').text(waletInvoice);
+            QRCode.toCanvas(document.getElementById('qrcode'), waletInvoice, {
+              width: 200,
+              margin: 2,
+              color: {
+                dark: '#ffffff',
+                light: '#00000000',
+              },
+            });
+
+            // Checagem automática do status
+            checkStatusLoop(currentInvoiceUuid);
+          } else {
+            alert('Falha ao gerar a invoice.');
+          }
+        } catch (error) {
+          console.error(error);
+          alert('Erro ao criar a invoice.');
+        }
+      });
+
+      // Loop para verificar status
+      async function checkStatusLoop(uuid) {
+        const interval = setInterval(async () => {
+          try {
+            const res = await axios.get(
+              `https://test.squarecity.app/webservice/store/get-status-invoice?uuid=${uuid}`,
+            );
+            const invoice = res.data.invoice;
+            const send = res.data.send;
+
+            if (invoice?.status === 'DONE' && send?.status === 'DONE') {
+              clearInterval(interval);
+              $('#receipt').removeClass('d-none');
+              $('#receipt-address').text(send.destinationAddress);
+              $('#receipt-txid').text(send.txid);
+              $('#receipt-block').text(send.blockNumber);
+              $('#loading-spinner').addClass('d-none'); // esconde loading
+            }
+          } catch (err) {
+            console.log('Erro ao verificar status', err);
+          }
+        }, 5000); // verifica a cada 5 segundos
+      }
+
+      // Iniciar com o preço carregado
+      getPrice();
+    </script>
+  </body>
+</html>
